@@ -91,6 +91,17 @@ class DatabaseEloquentIntegrationTest extends TestCase
             $table->string('role_string');
         });
 
+        $this->schema()->create('posts_having_uuids', function (Blueprint $table) {
+            $table->id();
+            $table->uuid();
+            $table->integer('user_id');
+            $table->timestamp('published_at', 6);
+            $table->string('name');
+            $table->tinyInteger('status');
+            $table->string('status_string');
+            $table->timestamps();
+        });
+
         foreach (['default', 'second_connection'] as $connection) {
             $this->schema($connection)->create('users', function ($table) {
                 $table->increments('id');
@@ -2615,7 +2626,7 @@ class DatabaseEloquentIntegrationTest extends TestCase
             '22222222-0000-7000-0000-000000000000',
         ]);
 
-        $this->assertTrue(ModelWithUniqueStringIds::fillAndInsert([
+        $this->assertTrue(UserWithUniqueStringIds::fillAndInsert([
             [
                 'name' => 'Taylor', 'role' => IntBackedRole::Admin, 'role_string' => StringBackedRole::Admin,
             ],
@@ -2630,7 +2641,7 @@ class DatabaseEloquentIntegrationTest extends TestCase
             ],
         ]));
 
-        $models = ModelWithUniqueStringIds::get();
+        $models = UserWithUniqueStringIds::get();
 
         $taylor = $models->firstWhere('name', 'Taylor');
         $nuno = $models->firstWhere('name', 'Nuno');
@@ -2662,13 +2673,13 @@ class DatabaseEloquentIntegrationTest extends TestCase
             '22222222-0000-7000-0000-000000000000',
         ]);
 
-        $this->assertEquals(1, ModelWithUniqueStringIds::fillAndInsertOrIgnore([
+        $this->assertEquals(1, UserWithUniqueStringIds::fillAndInsertOrIgnore([
             [
                 'id' => 1, 'name' => 'Taylor', 'role' => IntBackedRole::Admin, 'role_string' => StringBackedRole::Admin,
             ],
         ]));
 
-        $this->assertSame(1, ModelWithUniqueStringIds::fillAndInsertOrIgnore([
+        $this->assertSame(1, UserWithUniqueStringIds::fillAndInsertOrIgnore([
             [
                 'id' => 1, 'name' => 'Taylor', 'role' => IntBackedRole::Admin, 'role_string' => StringBackedRole::Admin,
             ],
@@ -2677,7 +2688,7 @@ class DatabaseEloquentIntegrationTest extends TestCase
             ],
         ]));
 
-        $models = ModelWithUniqueStringIds::get();
+        $models = UserWithUniqueStringIds::get();
         $this->assertSame('00000000-0000-7000-0000-000000000000', $models->firstWhere('name', 'Taylor')->uuid);
         $this->assertSame(
             ['uuid' => '22222222-0000-7000-0000-000000000000', 'role' => IntBackedRole::User],
@@ -2693,13 +2704,107 @@ class DatabaseEloquentIntegrationTest extends TestCase
 
         DB::enableQueryLog();
 
-        $this->assertIsInt($newId = ModelWithUniqueStringIds::fillAndInsertGetId([
+        $this->assertIsInt($newId = UserWithUniqueStringIds::fillAndInsertGetId([
             'name' => 'Taylor',
             'role' => IntBackedRole::Admin,
             'role_string' => StringBackedRole::Admin,
         ]));
         $this->assertCount(1, DB::getRawQueryLog());
-        $this->assertSame($newId, ModelWithUniqueStringIds::sole()->id);
+        $this->assertSame($newId, UserWithUniqueStringIds::sole()->id);
+    }
+
+    public function testCanFillAndInsertIntoHasManyRelationship()
+    {
+        $now = Carbon::now()->startOfSecond();
+        Carbon::setTestNow($now);
+
+        Str::createUuidsUsingSequence([
+            '00000000-0000-7000-0000-000000000000', // user
+            '11111111-1111-1111-1111-111111111111', // post id=1
+            '33333333-3333-3333-3333-333333333333', // post id=3
+        ]);
+
+        $user = tap(new UserWithUniqueStringIds(), function ($user) {
+            $user->forceFill(['name' => 'Taylor Otwell'])->save();
+        });
+
+        DB::enableQueryLog();
+
+        $this->assertTrue($user->posts()->fillAndInsert([
+            [
+                'id' => 1,
+                'name' => 'ship or die',
+                'published_at' => '2025-01-31T22:18:21.000Z',
+                'status' => 3,
+                'status_string' => StringBackedStatus::Published,
+            ],
+            [
+                'id' => 3,
+                'name' => 'Welcome to the future of Laravel.',
+                'published_at' => new Carbon('2025-02-24T15:16:55.000Z'),
+                // status is default
+                // status_string is default
+            ],
+        ]));
+
+        $this->assertCount(1, DB::getQueryLog());
+
+        $this->assertCount(2, $user->posts);
+
+        $this->assertSame('ship or die', $user->posts->find(1)->name);
+        $this->assertSame('11111111-1111-1111-1111-111111111111', $user->posts->find(1)->uuid);
+        $this->assertEquals($now, $user->posts->find(1)->created_at);
+        $this->assertEquals($now, $user->posts->find(1)->updated_at);
+        $this->assertSame(IntBackedStatus::Published, $user->posts->find(1)->status);
+        $this->assertSame(StringBackedStatus::Published, $user->posts->find(1)->status_string);
+        $this->assertEquals(Carbon::parse('2025-01-31T22:18:21.000Z'), $user->posts->find(1)->published_at);
+
+        $this->assertSame('Welcome to the future of Laravel.', $user->posts->find(3)->name);
+        $this->assertSame('33333333-3333-3333-3333-333333333333', $user->posts->find(3)->uuid);
+        $this->assertEquals($now, $user->posts->find(3)->created_at);
+        $this->assertEquals($now, $user->posts->find(3)->updated_at);
+        $this->assertSame(IntBackedStatus::Draft, $user->posts->find(3)->status);
+        $this->assertSame(StringBackedStatus::Draft, $user->posts->find(3)->status_string);
+        $this->assertEquals(Carbon::parse('2025-02-24T15:16:55.000Z'), $user->posts->find(3)->published_at);
+    }
+
+    public function testFillAndInsertOrIgnoreIntoHasManyRelationship()
+    {
+        Str::createUuidsUsingSequence([
+            '00000000-0000-7000-0000-000000000000', // user
+            '11111111-1111-1111-1111-111111111111', // post id=1
+            '22222222-2222-2222-2222-222222222222', // post id=1 ignored
+            '33333333-3333-3333-3333-333333333333', // post id=3
+        ]);
+
+        $user = tap(new UserWithUniqueStringIds(), function ($user) {
+            $user->forceFill(['name' => 'Taylor Otwell'])->save();
+        });
+
+        $attributes = [
+            ['id' => 1, 'published_at' => now(), 'name' => 'ship of die'],
+            ['id' => 3, 'published_at' => now(), 'name' => 'Welcome to the future of Laravel'],
+        ];
+
+        $this->assertSame(1, $user->posts()->fillAndInsertOrIgnore(array_slice($attributes, 0, 1)));
+        $this->assertSame(1, $user->posts()->fillAndInsertOrIgnore(array_slice($attributes, 0, 2)));
+
+        $this->assertSame('11111111-1111-1111-1111-111111111111', $user->posts->find(1)->uuid);
+        $this->assertSame('33333333-3333-3333-3333-333333333333', $user->posts->find(3)->uuid);
+    }
+
+    public function testfillAndInsertGetIdIntoHasManyRelationship()
+    {
+        $user = tap(new UserWithUniqueStringIds(), function ($user) {
+            $user->forceFill(['name' => 'Taylor Otwell'])->save();
+        });
+
+        $id = $user->posts()->fillAndInsertGetId([
+            'name' => 'We must ship.',
+            'published_at' => now(),
+        ]);
+
+        $this->assertSame(1, $id);
     }
 
     /**
@@ -3047,7 +3152,7 @@ class EloquentTestAchievement extends Eloquent
     }
 }
 
-class ModelWithUniqueStringIds extends Eloquent
+class UserWithUniqueStringIds extends Eloquent
 {
     use HasUuids;
 
@@ -3072,6 +3177,11 @@ class ModelWithUniqueStringIds extends Eloquent
     {
         return ['uuid'];
     }
+
+    public function posts()
+    {
+        return $this->hasMany(PostWithUniqueStringIds::class, 'user_id');
+    }
 }
 
 enum IntBackedRole: int
@@ -3084,4 +3194,47 @@ enum StringBackedRole: string
 {
     case User = 'user';
     case Admin = 'admin';
+}
+
+class PostWithUniqueStringIds extends Eloquent
+{
+    use HasUuids;
+
+    protected $table = 'posts_having_uuids';
+
+    protected function casts()
+    {
+        return [
+            'published_at' => 'datetime',
+            'status' => IntBackedStatus::class,
+            'status_string' => StringBackedStatus::class,
+        ];
+    }
+
+    protected $attributes = [
+        'status' => IntBackedStatus::Draft,
+        'status_string' => StringBackedStatus::Draft,
+    ];
+
+    public function uniqueIds()
+    {
+        return ['uuid'];
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(UserWithUniqueStringIds::class, 'user_id');
+    }
+}
+
+enum IntBackedStatus: int
+{
+    case Draft = 1;
+    case Published = 3;
+}
+
+enum StringBackedStatus: string
+{
+    case Draft = 'draft';
+    case Published = 'published';
 }
